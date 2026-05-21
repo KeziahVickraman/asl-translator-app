@@ -1,0 +1,11 @@
+{
+  "name": "SignBridge",
+  "description": "A high-fidelity sign language translation, speech-to-sign, and learning application powered by Gemini AI.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

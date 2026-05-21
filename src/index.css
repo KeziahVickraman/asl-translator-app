@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Lora", Georgia, Cambria, serif;
+  --color-surface-bright: #ffffff;
+  --color-surface-tint: #8d917a;
+  --color-surface-container-high: #f0f0e8;
+  --color-surface-container: #ffffff;
+  --color-background: #f5f5f0;
+  --color-primary: #8d917a;
+  --color-primary-container: #5a5a40;
+  --color-secondary: #a3a398;
+  --color-secondary-container: #e2e2da;
+  --color-on-surface: #33332d;
+  --color-on-surface-variant: #6a6a5c;
+  --color-outline-variant: #e2e2da;
+  --color-error: #ba1a1a;
+  --color-error-container: #ffdad6;
+}
+
+@layer utilities {
+  .pulsate-primary {
+    animation: pulsate-ring 2s infinite ease-in-out;
+  }
+  
+  .glow-effect {
+    box-shadow: 0 0 20px rgba(141, 145, 122, 0.2);
+  }
+  
+  .mode-card-shadow {
+    box-shadow: 0 4px 20px rgba(90, 90, 64, 0.08);
+  }
+}
+
+@keyframes pulsate-ring {
+  0% { box-shadow: 0 0 0 0 rgba(141, 145, 122, 0.5); }
+  70% { box-shadow: 0 0 0 15px rgba(141, 145, 122, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(141, 145, 122, 0); }
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f5f5f0;
+  color: #33332d;
+  -webkit-tap-highlight-color: transparent;
+}
+
