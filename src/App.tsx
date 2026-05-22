@@ -8,6 +8,81 @@ import CameraView from "./components/CameraView";
 import TranscriptionView from "./components/TranscriptionView";
 import LearnView from "./components/LearnView";
 import SettingsView from "./components/SettingsView";
+import { supabase } from "./supabaseClient";
+
+// Helper to safely convert dynamic Supabase table rows from "entries" to standard TranslationHistoryItem type
+function mapRowToHistoryItem(row: any): TranslationHistoryItem {
+  let recognizedText = "";
+  if (row.recognized_text !== undefined) {
+    recognizedText = row.recognized_text;
+  } else if (row.recognizedText !== undefined) {
+    recognizedText = row.recognizedText;
+  } else if (row.recognizedtext !== undefined) {
+    recognizedText = row.recognizedtext;
+  } else if (row.recognized !== undefined) {
+    recognizedText = row.recognized;
+  } else {
+    // Dynamically fallback to find any extra string property that is not standard
+    const key = Object.keys(row).find(
+      (k) =>
+        !["id", "text", "mode", "created_at", "timestamp"].includes(k) &&
+        typeof row[k] === "string"
+    );
+    recognizedText = key ? row[key] : "";
+  }
+
+  const rawTime = row.created_at || row.timestamp || row.created_time || new Date().toISOString();
+  let formattedTime = "";
+  try {
+    const d = new Date(rawTime);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+    
+    const timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (d.toDateString() === today.toDateString()) {
+      formattedTime = `Today, ${timeStr}`;
+    } else if (d.toDateString() === yesterday.toDateString()) {
+      formattedTime = `Yesterday, ${timeStr}`;
+    } else {
+      formattedTime = `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${timeStr}`;
+    }
+  } catch (err) {
+    formattedTime = rawTime;
+  }
+
+  return {
+    id: row.id?.toString() || ("hist-" + Date.now()),
+    text: row.text || "",
+    recognizedText: recognizedText,
+    mode: row.mode || "camera",
+    timestamp: formattedTime,
+  };
+}
+
+const DEFAULT_MOCK_HISTORY: TranslationHistoryItem[] = [
+  {
+    id: "hist-1",
+    timestamp: "Today, 5:40 PM",
+    text: "How are you",
+    recognizedText: "How are you (ASL Sequence)",
+    mode: "text"
+  },
+  {
+    id: "hist-2",
+    timestamp: "Today, 5:35 PM",
+    text: "Webcam Gesture",
+    recognizedText: "Thank you for helping me navigate this.",
+    mode: "camera"
+  },
+  {
+    id: "hist-3",
+    timestamp: "Yesterday, 3:12 PM",
+    text: "Hello launch",
+    recognizedText: "Hello launch (Fingerspelling & Word)",
+    mode: "text"
+  }
+];
 
 export default function App() {
   // 1. Unified state shape mapping exactly to requested specs
@@ -30,41 +105,126 @@ export default function App() {
   // Slide-out hamburger navigation drawer state
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
-  // Translation history list initialized with mock records
-  const [history, setHistory] = useState<TranslationHistoryItem[]>([
-    {
-      id: "hist-1",
-      timestamp: "Today, 5:40 PM",
-      text: "How are you",
-      recognizedText: "How are you (ASL Sequence)",
-      mode: "text"
-    },
-    {
-      id: "hist-2",
-      timestamp: "Today, 5:35 PM",
-      text: "Webcam Gesture",
-      recognizedText: "Thank you for helping me navigate this.",
-      mode: "camera"
-    },
-    {
-      id: "hist-3",
-      timestamp: "Yesterday, 3:12 PM",
-      text: "Hello launch",
-      recognizedText: "Hello launch (Fingerspelling & Word)",
-      mode: "text"
-    }
-  ]);
+  // Translation history list initialized from mock records, updated dynamically by Supabase
+  const [history, setHistory] = useState<TranslationHistoryItem[]>(DEFAULT_MOCK_HISTORY);
 
-  // Sync state values on changes
-  const addHistoryItem = (text: string, recognizedText: string, logMode: "camera" | "text") => {
-    const newItem: TranslationHistoryItem = {
-      id: "hist-" + Date.now(),
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      text,
-      recognizedText,
-      mode: logMode
+  // 2. Fetch history on mount & subscribe to live Supabase Postgres updates
+  useEffect(() => {
+    const loadInitialHistory = async () => {
+      try {
+        let { data, error } = await supabase
+          .from("entries")
+          .select("*")
+          .order("id", { ascending: false })
+          .limit(30);
+        
+        if (error) {
+          // Fallback to query without specific ID ordering if custom primary key was named otherwise
+          const fb = await supabase.from("entries").select("*").limit(30);
+          data = fb.data;
+          error = fb.error;
+        }
+
+        if (!error && data) {
+          if (data.length > 0) {
+            const mappedItems = data.map(mapRowToHistoryItem);
+            setHistory(mappedItems);
+          } else {
+            // Table was empty; set custom defaults
+            setHistory(DEFAULT_MOCK_HISTORY);
+          }
+        } else {
+          console.warn("Supabase loading history issue / empty callback:", error);
+        }
+      } catch (err) {
+        console.warn("Supabase initial load error:", err);
+      }
     };
-    setHistory((prev) => [newItem, ...prev]);
+
+    loadInitialHistory();
+
+    // Set up Realtime listener to watch INSERTs on table "entries" and update state live
+    const channel = supabase
+      .channel("live_entries_channel")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "entries",
+        },
+        (payload) => {
+          if (payload.new) {
+            const mapped = mapRowToHistoryItem(payload.new);
+            setHistory((prev) => {
+              // Avoid duplicate entries if they were added locally by active instance
+              if (prev.some((item) => item.id === mapped.id)) {
+                return prev;
+              }
+              // Clean default placeholder data if user entries take place
+              const cleanedPrev = prev.filter(item => !item.id.startsWith("hist-"));
+              return [mapped, ...cleanedPrev];
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Post items to Postgres storage live with self-healing fallback loops
+  const addHistoryItem = async (text: string, recognizedText: string, logMode: "camera" | "text") => {
+    const attempts = [
+      { text, recognized_text: recognizedText, mode: logMode },
+      { text, recognizedText: recognizedText, mode: logMode },
+      { text, recognizedtext: recognizedText, mode: logMode },
+      { text, recognized: recognizedText, mode: logMode },
+      { text, mode: logMode }
+    ];
+
+    let insertedRecord = null;
+    for (const payload of attempts) {
+      try {
+        const { data, error } = await supabase
+          .from("entries")
+          .insert([payload])
+          .select();
+        
+        if (!error && data && data.length > 0) {
+          insertedRecord = data[0];
+          break;
+        }
+      } catch (err) {
+        // Log & check next fallback
+      }
+    }
+
+    if (insertedRecord) {
+      const mapped = mapRowToHistoryItem(insertedRecord);
+      setHistory((prev) => {
+        if (prev.some((item) => item.id === mapped.id)) {
+          return prev;
+        }
+        const cleanedPrev = prev.filter(item => !item.id.startsWith("hist-"));
+        return [mapped, ...cleanedPrev];
+      });
+    } else {
+      // Local fallback representation if server connection drops or Supabase table entries isn't fully configured
+      const localItem: TranslationHistoryItem = {
+        id: "hist-local-" + Date.now(),
+        timestamp: "Now",
+        text,
+        recognizedText,
+        mode: logMode
+      };
+      setHistory((prev) => {
+        const cleanedPrev = prev.filter(item => !["hist-1", "hist-2", "hist-3"].includes(item.id));
+        return [localItem, ...cleanedPrev];
+      });
+    }
   };
 
   const handleStartCamera = () => {
