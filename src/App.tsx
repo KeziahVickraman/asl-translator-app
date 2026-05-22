@@ -9,6 +9,7 @@ import TranscriptionView from "./components/TranscriptionView";
 import LearnView from "./components/LearnView";
 import SettingsView from "./components/SettingsView";
 import LoginView from "./components/LoginView";
+import SocialView from "./components/SocialView";
 import { supabase } from "./supabaseClient";
 
 // Helper to safely convert dynamic Supabase table rows from "entries" to standard TranslationHistoryItem type
@@ -322,6 +323,12 @@ export default function App() {
             </motion.div>
           )}
 
+          {mode === "social" && (
+            <motion.div key="social" className="w-full flex flex-col">
+              <SocialView />
+            </motion.div>
+          )}
+
           {mode === "settings" && (
             <motion.div key="settings" className="w-full flex flex-col">
               <SettingsView
@@ -390,6 +397,7 @@ export default function App() {
                     { mode: "camera" as const, label: "Live Camera Translation", icon: "videocam" },
                     { mode: "text" as const, label: "Text & Voice to Sign", icon: "keyboard" },
                     { mode: "learn" as const, label: "Sign Learning Library", icon: "school" },
+                    { mode: "social" as const, label: "Social Disqus Forum", icon: "forum" },
                     { mode: "settings" as const, label: "Accessibility Settings", icon: "settings" },
                   ].map((item) => {
                     const isTabActive = mode === item.mode;

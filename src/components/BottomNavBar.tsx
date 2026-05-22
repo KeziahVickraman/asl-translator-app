@@ -12,6 +12,7 @@ export default function BottomNavBar({ currentMode, onNavigate }: BottomNavBarPr
     { mode: "camera" as const, label: "Camera", icon: "videocam" },
     { mode: "text" as const, label: "Text", icon: "keyboard" },
     { mode: "learn" as const, label: "Learn", icon: "school" },
+    { mode: "social" as const, label: "Social", icon: "forum" },
     { mode: "settings" as const, label: "Settings", icon: "settings" },
   ];
 
@@ -27,8 +28,8 @@ export default function BottomNavBar({ currentMode, onNavigate }: BottomNavBarPr
             id={`tab_${tab.mode}`}
             className={`flex flex-col items-center justify-center transition-all duration-150 active:scale-95 cursor-pointer ${
               isActive
-                ? "bg-[#8d917a] text-white rounded-full px-5 py-1.5 shadow-sm transform -translate-y-0.5"
-                : "text-[#8a8a7c] hover:text-[#33332d] px-4 py-1.5 hover:bg-[#e2e2da]/40 rounded-xl"
+                ? "bg-[#8d917a] text-white rounded-full px-3 sm:px-5 py-1.5 shadow-sm transform -translate-y-0.5"
+                : "text-[#8a8a7c] hover:text-[#33332d] px-2 sm:px-4 py-1.5 hover:bg-[#e2e2da]/40 rounded-xl"
             }`}
           >
             <span

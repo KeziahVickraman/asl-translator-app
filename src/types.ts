@@ -1,4 +1,4 @@
-export type DisplayMode = "home" | "camera" | "text" | "learn" | "settings";
+export type DisplayMode = "home" | "camera" | "text" | "learn" | "social" | "settings";
 
 export interface SignLetter {
   char: string;
