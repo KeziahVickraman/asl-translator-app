@@ -2,6 +2,21 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { DisplayMode, TranslationHistoryItem } from "../types";
 
+const loadScript = (src: string): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve();
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load script ${src}`));
+    document.head.appendChild(script);
+  });
+};
+
 interface CameraViewProps {
   languageClass: "ASL" | "Auslan" | "BSL";
   textSize: number;
@@ -20,6 +35,7 @@ export default function CameraView({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingIntervalRef = useRef<any>(null);
+  const predictionLoopRef = useRef<number | null>(null);
 
   const [hasCamera, setHasCamera] = useState<boolean | null>(null);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(true);
@@ -46,179 +62,63 @@ export default function CameraView({
     { cx: 520, cy: 320, r: 5 },
   ]);
 
-  // Calibration and Custom Training properties
-  const [activeTab, setActiveTab] = useState<"demo" | "calibration" | "faq">("demo");
-  const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
-  const [selectedTemplateName, setSelectedTemplateName] = useState<string>("More (Fingers Touching)");
-  const [activeDragIndex, setActiveDragIndex] = useState<number | null>(null);
-
-  const [trainedTemplates, setTrainedTemplates] = useState<Record<string, Array<{ cx: number; cy: number; r: number }>>>(() => {
-    const saved = localStorage.getItem("signbridge_trained_templates");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse trained templates logs", e);
-      }
-    }
-    return {
-      "Thank you": [
-        { cx: 500, cy: 550, r: 6 },
-        { cx: 500, cy: 460, r: 5 },
-        { cx: 500, cy: 390, r: 5 },
-        { cx: 500, cy: 320, r: 5 },
-        { cx: 460, cy: 460, r: 5 },
-        { cx: 450, cy: 390, r: 5 },
-        { cx: 440, cy: 310, r: 5 },
-        { cx: 540, cy: 470, r: 5 },
-        { cx: 550, cy: 410, r: 5 },
-        { cx: 560, cy: 330, r: 5 }
-      ],
-      "More (Fingers Touching)": [
-        { cx: 450, cy: 500, r: 6 },
-        { cx: 470, cy: 480, r: 5 },
-        { cx: 490, cy: 460, r: 5 },
-        { cx: 510, cy: 465, r: 5 }, // Thumb tip
-        { cx: 520, cy: 465, r: 5 }, // Index tip touching
-        { cx: 480, cy: 420, r: 5 },
-        { cx: 490, cy: 440, r: 5 },
-        { cx: 520, cy: 420, r: 5 },
-        { cx: 515, cy: 440, r: 5 },
-        { cx: 550, cy: 500, r: 5 }
-      ],
-      "Please": [
-        { cx: 450, cy: 600, r: 6 },
-        { cx: 450, cy: 510, r: 5 },
-        { cx: 455, cy: 430, r: 5 },
-        { cx: 460, cy: 350, r: 5 },
-        { cx: 485, cy: 510, r: 5 },
-        { cx: 490, cy: 430, r: 5 },
-        { cx: 495, cy: 350, r: 5 },
-        { cx: 520, cy: 510, r: 5 },
-        { cx: 525, cy: 430, r: 5 },
-        { cx: 530, cy: 350, r: 5 }
-      ],
-      "Yes": [
-        { cx: 500, cy: 600, r: 6 },
-        { cx: 480, cy: 550, r: 5 },
-        { cx: 495, cy: 540, r: 5 },
-        { cx: 510, cy: 540, r: 5 },
-        { cx: 470, cy: 560, r: 5 },
-        { cx: 460, cy: 570, r: 5 },
-        { cx: 450, cy: 580, r: 5 },
-        { cx: 525, cy: 560, r: 5 },
-        { cx: 535, cy: 570, r: 5 },
-        { cx: 545, cy: 580, r: 5 }
-      ],
-      "Hello": [
-        { cx: 450, cy: 600, r: 6 },
-        { cx: 480, cy: 520, r: 5 },
-        { cx: 520, cy: 480, r: 5 },
-        { cx: 580, cy: 450, r: 5 },
-        { cx: 440, cy: 500, r: 5 },
-        { cx: 430, cy: 420, r: 5 },
-        { cx: 420, cy: 350, r: 5 },
-        { cx: 480, cy: 480, r: 5 },
-        { cx: 500, cy: 400, r: 5 },
-        { cx: 520, cy: 320, r: 5 }
-      ]
-    };
+  // Teachable Machine integration states
+  const [tmModelUrl, setTmModelUrl] = useState<string>(() => {
+    return localStorage.getItem("signbridge_tm_model_url") || "https://teachablemachine.withgoogle.com/models/v020rUMcL/";
   });
+  const [isTmModelLoading, setIsTmModelLoading] = useState<boolean>(false);
+  const [tmModel, setTmModel] = useState<any>(null);
+  const [tmPredictions, setTmPredictions] = useState<Array<{ className: string; probability: number }>>([]);
+  const [isTmActive, setIsTmActive] = useState<boolean>(false);
 
-  const handleLandmarkMouseDown = (index: number, e: React.MouseEvent) => {
-    if (!isCalibrating) return;
-    e.stopPropagation();
-    setActiveDragIndex(index);
-  };
+  // Active tab defaults to "teachable" for quick custom model demo. Calibrator removed.
+  const [activeTab, setActiveTab] = useState<"demo" | "teachable" | "faq">("teachable");
 
-  const handleLandmarkTouchStart = (index: number, e: React.TouchEvent) => {
-    if (!isCalibrating) return;
-    e.stopPropagation();
-    setActiveDragIndex(index);
-  };
 
-  const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (activeDragIndex === null || !isCalibrating) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 1000;
-    const y = ((e.clientY - rect.top) / rect.height) * 1000;
-    setLandmarks((prev) => {
-      const next = [...prev];
-      if (next[activeDragIndex]) {
-        next[activeDragIndex] = { ...next[activeDragIndex], cx: Math.round(Math.max(10, Math.min(990, x))), cy: Math.round(Math.max(10, Math.min(990, y))) };
-      }
-      return next;
-    });
-  };
+  const handleLoadTmModel = async (url: string, isManual: boolean = false) => {
+    if (!url || !url.trim()) return;
+    setIsTmModelLoading(true);
+    try {
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js");
 
-  const handleSvgTouchMove = (e: React.TouchEvent<SVGSVGElement>) => {
-    if (activeDragIndex === null || !isCalibrating || !e.touches[0]) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const touch = e.touches[0];
-    const x = ((touch.clientX - rect.left) / rect.width) * 1000;
-    const y = ((touch.clientY - rect.top) / rect.height) * 1000;
-    setLandmarks((prev) => {
-      const next = [...prev];
-      if (next[activeDragIndex]) {
-        next[activeDragIndex] = { ...next[activeDragIndex], cx: Math.round(Math.max(10, Math.min(990, x))), cy: Math.round(Math.max(10, Math.min(990, y))) };
-      }
-      return next;
-    });
-  };
-
-  const stopDragging = () => {
-    setActiveDragIndex(null);
-  };
-
-  const findMatchingTemplate = (currentLms: Array<{ cx: number; cy: number }>) => {
-    let bestMatch = null;
-    let minError = Infinity;
-
-    Object.keys(trainedTemplates).forEach((name) => {
-      const templateLms = trainedTemplates[name];
-      if (currentLms.length !== templateLms.length) return;
-
-      const currentCenterX = currentLms.reduce((sum, pt) => sum + pt.cx, 0) / currentLms.length;
-      const currentCenterY = currentLms.reduce((sum, pt) => sum + pt.cy, 0) / currentLms.length;
-
-      const templateCenterX = templateLms.reduce((sum, pt) => sum + pt.cx, 0) / templateLms.length;
-      const templateCenterY = templateLms.reduce((sum, pt) => sum + pt.cy, 0) / templateLms.length;
-
-      let errorSum = 0;
-      for (let i = 0; i < currentLms.length; i++) {
-        const dx = (currentLms[i].cx - currentCenterX) - (templateLms[i].cx - templateCenterX);
-        const dy = (currentLms[i].cy - currentCenterY) - (templateLms[i].cy - templateCenterY);
-        errorSum += Math.sqrt(dx * dx + dy * dy);
+      let formattedUrl = url.trim();
+      if (!formattedUrl.endsWith("/")) {
+        formattedUrl += "/";
       }
 
-      const avgError = errorSum / currentLms.length;
-      if (avgError < minError) {
-        minError = avgError;
-        bestMatch = { name, error: avgError };
+      const tmImage = (window as any).tmImage;
+      if (!tmImage) {
+        throw new Error("Teachable Machine library is not defined on window.");
       }
-    });
 
-    if (bestMatch && bestMatch.error < 110) {
-      return bestMatch;
+      const loadedModel = await tmImage.load(
+        formattedUrl + "model.json",
+        formattedUrl + "metadata.json"
+      );
+
+      setTmModel(loadedModel);
+      setIsTmActive(true);
+      setTmModelUrl(formattedUrl);
+      localStorage.setItem("signbridge_tm_model_url", formattedUrl);
+      if (isManual) {
+        alert("🎯 Teachable Machine Model loaded successfully! Live stream is now active in Teachable Machine mode.");
+      }
+    } catch (err: any) {
+      console.error("TM loading error:", err);
+      if (isManual) {
+        alert(`Failed to load Teachable Machine model: ${err.message}. Check that the URL is correct (must contain project files like model.json and metadata.json).`);
+      }
+    } finally {
+      setIsTmModelLoading(false);
     }
-    return null;
   };
 
-  const handleSaveTrainedTemplate = () => {
-    setTrainedTemplates((prev) => {
-      const next = { ...prev, [selectedTemplateName]: [...landmarks] };
-      localStorage.setItem("signbridge_trained_templates", JSON.stringify(next));
-      return next;
-    });
-    alert(`🎯 Successfully saved & calibrated custom landmark model for "${selectedTemplateName}" with current fingertips positioning! Any matching finger positions will now auto-resolve.`);
-    setIsCalibrating(false);
-  };
-
-  const handleResetToDefaultTemplate = () => {
-    localStorage.removeItem("signbridge_trained_templates");
-    alert("Templates reset to high-fidelity factory default coordinates.");
-    window.location.reload();
-  };
+  // Autoload custom TM model on mount
+  useEffect(() => {
+    const savedUrl = localStorage.getItem("signbridge_tm_model_url") || "https://teachablemachine.withgoogle.com/models/v020rUMcL/";
+    handleLoadTmModel(savedUrl, false);
+  }, []);
 
   // List of simulated triggers the user can test if no camera or physically testing
   const SIMULATED_SIGNS = [
@@ -292,40 +192,18 @@ export default function CameraView({
     
     // Auto translate when they stop recording!
     if (hasCamera && videoRef.current) {
-      const match = findMatchingTemplate(landmarks);
-      if (match) {
-        setIsLoading(true);
-        setTimeout(() => {
-          setIsLoading(false);
-          setRecognisedText(`${match.name === "More (Fingers Touching)" ? "More / Fingertips Touch" : match.name} (Trained Calibrated Gesture Match)`);
-          setConfidence(0.99);
-          onAddHistoryItem("Webcam Gesture", `${match.name} (Trained Match)`, "camera");
-          if ("vibrate" in navigator) {
-            navigator.vibrate(120);
-          }
-        }, 600);
-      } else {
-        handleSnapAndRecognize();
-      }
+      handleSnapAndRecognize();
     } else {
       setIsLoading(true);
       setTimeout(() => {
         setIsLoading(false);
-        const matchTemplate = findMatchingTemplate(landmarks);
-        if (matchTemplate) {
-          setRecognisedText(`${matchTemplate.name === "More (Fingers Touching)" ? "More / Fingertips Touch" : matchTemplate.name} (Trained Calibrated Gesture Match)`);
-          setConfidence(0.99);
-          onAddHistoryItem("Webcam Gesture", `${matchTemplate.name} (Trained Match)`, "camera");
-        } else {
-          // Find matching simulated phrase
-          const match = SIMULATED_SIGNS.find(s => s.word.toLowerCase() === chosenMockSign.toLowerCase()) || {
-            text: `Recognized simulated gesture for "${chosenMockSign}" successfully!`,
-            confidence: 0.95
-          };
-          setRecognisedText(match.text);
-          setConfidence(match.confidence);
-          onAddHistoryItem("Webcam Gesture", match.text, "camera");
-        }
+        const match = SIMULATED_SIGNS.find(s => s.word.toLowerCase() === chosenMockSign.toLowerCase()) || {
+          text: `Recognized simulated gesture for "${chosenMockSign}" successfully!`,
+          confidence: 0.95
+        };
+        setRecognisedText(match.text);
+        setConfidence(match.confidence);
+        onAddHistoryItem("Webcam Gesture", match.text, "camera");
         if ("vibrate" in navigator) {
           navigator.vibrate(120);
         }
@@ -370,17 +248,73 @@ export default function CameraView({
     return () => clearInterval(interval);
   }, []);
 
+  // Continuous Teachable Machine prediction loop running at ~4 FPS (super snappy but highly efficient)
+  useEffect(() => {
+    if (isTmActive && tmModel && isCameraActive && videoRef.current && hasCamera) {
+      let isStopped = false;
+      
+      const predictFrame = async () => {
+        if (isStopped || !videoRef.current || !tmModel) return;
+        
+        try {
+          if (videoRef.current.readyState >= 2) { // HAVE_CURRENT_DATA
+            const predictions = await tmModel.predict(videoRef.current);
+            // Sort to get highest probability
+            const sorted = [...predictions].sort((a: any, b: any) => b.probability - a.probability);
+            setTmPredictions(sorted);
+
+            if (sorted.length > 0 && sorted[0].probability > 0.70) {
+              const best = sorted[0];
+              // Update recognized text if it's different and stable
+              setRecognisedText((prev) => {
+                const stripTag = (s: string) => s.split(" (Teachable")[0];
+                if (stripTag(prev) !== best.className) {
+                  // Vibrate to confirm
+                  if ("vibrate" in navigator) {
+                    navigator.vibrate(50);
+                  }
+                  onAddHistoryItem("Teachable Machine", best.className, "camera");
+                  
+                  // Trigger speak aloud
+                  if ("speechSynthesis" in window) {
+                    window.speechSynthesis.cancel();
+                    const utterance = new SpeechSynthesisUtterance(best.className);
+                    utterance.rate = 1.0;
+                    window.speechSynthesis.speak(utterance);
+                  }
+                  setConfidence(Math.round(best.probability * 100) / 100);
+                  return `${best.className} (Teachable Machine AI Match)`;
+                }
+                return prev;
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Prediction loop frame classification error:", err);
+        }
+        
+        // Schedule next prediction in 250ms (4 FPS is excellent for quick translations and extremely light on CPU)
+        setTimeout(() => {
+          if (!isStopped) {
+            predictionLoopRef.current = requestAnimationFrame(predictFrame);
+          }
+        }, 250);
+      };
+
+      predictionLoopRef.current = requestAnimationFrame(predictFrame);
+
+      return () => {
+        isStopped = true;
+        if (predictionLoopRef.current) {
+          cancelAnimationFrame(predictionLoopRef.current);
+          predictionLoopRef.current = null;
+        }
+      };
+    }
+  }, [isTmActive, tmModel, isCameraActive, hasCamera]);
+
   // Trigger frame snapshot detection with Gemini
   const handleSnapAndRecognize = async () => {
-    // Check local calibrated template match override first
-    const match = findMatchingTemplate(landmarks);
-    if (match) {
-      setRecognisedText(`${match.name === "More (Fingers Touching)" ? "More / Fingertips Touch" : match.name} (Trained Calibrated Gesture Match)`);
-      setConfidence(0.99 - (match.error / 1000));
-      onAddHistoryItem("Webcam Gesture", `${match.name} (Trained Match)`, "camera");
-      return;
-    }
-
     setIsLoading(true);
     try {
       let captureBase64 = null;
@@ -521,12 +455,7 @@ export default function CameraView({
           {/* SVG Hand Landmark Overlay mappings (MediaPipe tracking effect) */}
           {isCameraActive && (
             <svg
-              className={`absolute inset-0 w-full h-full z-10 ${isCalibrating ? "pointer-events-auto cursor-crosshair bg-emerald-500/5" : "pointer-events-none"}`}
-              onMouseMove={handleSvgMouseMove}
-              onTouchMove={handleSvgTouchMove}
-              onMouseUp={stopDragging}
-              onMouseLeave={stopDragging}
-              onTouchEnd={stopDragging}
+              className="absolute inset-0 w-full h-full z-10 pointer-events-none"
               preserveAspectRatio="xMidYMid slice"
               viewBox="0 0 1000 1000"
             >
@@ -583,20 +512,14 @@ export default function CameraView({
                 </>
               )}
 
-              {/* Render dynamic marker dots */}
+              {/* Render dynamic marker dots representing auto hand landmarks */}
               {landmarks.map((dot, idx) => (
                 <circle
                   key={idx}
                   cx={dot.cx}
                   cy={dot.cy}
-                  r={isCalibrating ? dot.r + 9 : dot.r + 1}
-                  onMouseDown={(e) => handleLandmarkMouseDown(idx, e)}
-                  onTouchStart={(e) => handleLandmarkTouchStart(idx, e)}
-                  className={`transition-all ${
-                    isCalibrating
-                      ? "fill-amber-400 stroke-white stroke-[3px] cursor-move opacity-100 hover:scale-125 hover:fill-rose-500 drop-shadow-[0_0_8px_rgba(245,158,11,0.8)]"
-                      : "fill-[#8d917a] drop-shadow-[0_0_3px_rgba(141,145,122,0.9)] opacity-95"
-                  }`}
+                  r={dot.r + 1}
+                  className="transition-all fill-[#8d917a] drop-shadow-[0_0_3px_rgba(141,145,122,0.9)] opacity-95"
                 />
               ))}
             </svg>
@@ -645,42 +568,42 @@ export default function CameraView({
         <div className="w-full flex flex-col gap-3 pointer-events-auto select-none bg-white/95 backdrop-blur-md p-3.5 rounded-3xl border border-[#e2e2da] shadow-md transition-all">
           
           {/* Elegant mini tabs headers */}
-          <div className="flex border-b border-[#e2e2da] pb-1 gap-1 text-xs">
+          <div className="flex border-b border-[#e2e2da] pb-1 gap-1 text-[11px] overflow-x-auto no-scrollbar">
             <button
               type="button"
-              onClick={() => { setActiveTab("demo"); setIsCalibrating(false); }}
-              className={`flex-1 py-1.5 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+              onClick={() => { setActiveTab("teachable"); }}
+              className={`flex-1 min-w-[105px] py-1.5 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+                activeTab === "teachable"
+                  ? "bg-[#5a5a40] text-white"
+                  : "text-[#6a6a5c] hover:bg-[#f5f5f0]"
+              }`}
+            >
+              <span className="material-symbols-outlined text-xs">model_training</span>
+              Teachable AI
+            </button>
+            <button
+              type="button"
+              onClick={() => { setActiveTab("demo"); }}
+              className={`flex-1 min-w-[75px] py-1.5 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
                 activeTab === "demo"
                   ? "bg-[#5a5a40] text-white"
                   : "text-[#6a6a5c] hover:bg-[#f5f5f0]"
               }`}
             >
-              <span className="material-symbols-outlined text-xs">auto_awesome</span>
-              Demo Presets
+              <span className="material-symbols-outlined text-xs font-bold">auto_awesome</span>
+              Presets
             </button>
             <button
               type="button"
-              onClick={() => { setActiveTab("calibration"); setIsCalibrating(true); }}
-              className={`flex-1 py-1.5 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
-                activeTab === "calibration"
-                  ? "bg-[#5a5a40] text-white"
-                  : "text-[#6a6a5c] hover:bg-[#f5f5f0]"
-              }`}
-            >
-              <span className="material-symbols-outlined text-xs">precision_manufacturing</span>
-              🔧 Tactile Calibrator
-            </button>
-            <button
-              type="button"
-              onClick={() => { setActiveTab("faq"); setIsCalibrating(false); }}
-              className={`flex-1 py-1.5 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+              onClick={() => { setActiveTab("faq"); }}
+              className={`flex-1 min-w-[65px] py-1.5 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
                 activeTab === "faq"
                   ? "bg-[#5a5a40] text-white"
                   : "text-[#6a6a5c] hover:bg-[#f5f5f0]"
               }`}
             >
               <span className="material-symbols-outlined text-xs">language</span>
-              ASL APIs Info
+              ASL APIs
             </button>
           </div>
 
@@ -715,73 +638,88 @@ export default function CameraView({
             </div>
           )}
 
-          {/* TAB 2: Tactile Calibration & Training Panel */}
-          {activeTab === "calibration" && (
+          {/* TAB 3: Teachable Machine Custom Training */}
+          {activeTab === "teachable" && (
             <div className="flex flex-col gap-2 text-left">
-              <p className="text-[10px] text-rose-700 font-bold px-1 uppercase leading-snug flex items-center gap-1">
-                <span className="animate-pulse inline-block w-2.5 h-2.5 rounded-full bg-red-600"></span>
-                Calibration Mode Active: Drag the amber dots on the camera viewport above to model fingers touching, then save!
+              <span className="text-[10px] text-[#5a5a40] font-bold uppercase tracking-wider block">
+                🧠 Live-Load Custom Teachable Machine Models
+              </span>
+              <p className="text-[10px] text-[#6a6a5c] leading-relaxed">
+                Connect your Google Teachable Machine exported link to run instant, 100% private sign language classifications client-side on your webcam!
               </p>
               
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-[#5a5a40] font-bold">Training Target:</span>
-                <select
-                  value={selectedTemplateName}
-                  onChange={(e) => {
-                    const name = e.target.value;
-                    setSelectedTemplateName(name);
-                    // Load that template's landmarks instantly as current position
-                    if (trainedTemplates[name]) {
-                      setLandmarks([...trainedTemplates[name]]);
-                    }
-                  }}
-                  className="bg-[#f5f5f0] text-xs font-bold text-[#33332d] px-2 py-1.5 rounded-lg border border-[#e2e2da]"
-                >
-                  <option value="More (Fingers Touching)">More (Fingers Touching)</option>
-                  <option value="Thank you">Thank you</option>
-                  <option value="Please">Please</option>
-                  <option value="Yes">Yes</option>
-                  <option value="Hello">Hello</option>
-                </select>
+              <div className="bg-[#f5f5f0] p-2 rounded-xl border border-[#e2e2da] text-[8.5px] text-[#333333] space-y-1">
+                <div className="flex gap-1.5"><span className="text-emerald-700 font-bold">Step 1:</span><span>Navigate to <strong>teachablemachine.withgoogle.com</strong> & select <strong>Image Project</strong>.</span></div>
+                <div className="flex gap-1.5"><span className="text-emerald-700 font-bold">Step 2:</span><span>Record classes with your web camera (e.g. <em>Hello</em>, <em>Eat</em>, <em>More</em>).</span></div>
+                <div className="flex gap-1.5"><span className="text-emerald-700 font-bold">Step 3:</span><span>Train & Export &rarr; <strong>Upload (shareable link)</strong>. Paste that link below.</span></div>
               </div>
 
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveTrainedTemplate}
-                  className="flex-1 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-lg shadow cursor-pointer transition-colors"
-                >
-                  Save Calibrated Pose
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (trainedTemplates[selectedTemplateName]) {
-                      setLandmarks([...trainedTemplates[selectedTemplateName]]);
-                      alert("Reset current coordinates to template's last saved pose.");
-                    }
-                  }}
-                  className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-lg border border-[#e2e2da] cursor-pointer"
-                >
-                  Reload Pose
-                </button>
-                <button
-                  type="button"
-                  onClick={handleResetToDefaultTemplate}
-                  className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-lg cursor-pointer"
-                  title="Wipe custom coordinates storage"
-                >
-                  Wipe Data
-                </button>
+              <div className="flex flex-col gap-1 mt-1">
+                <label className="text-[9px] font-bold text-[#565949]">Your Exported Model Link:</label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={tmModelUrl}
+                    onChange={(e) => setTmModelUrl(e.target.value)}
+                    placeholder="https://teachablemachine.withgoogle.com/models/vA-xB3_9X/"
+                    className="flex-1 bg-[#f5f5f0] text-[10px] border border-[#e2e2da] px-2.5 py-1.5 rounded-lg text-[#33332d] focus:outline-none focus:border-[#8d917a] font-mono leading-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleLoadTmModel(tmModelUrl, true)}
+                    disabled={isTmModelLoading}
+                    className="px-3 py-1.5 bg-[#5a5a40] hover:bg-[#464632] disabled:bg-gray-300 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                  >
+                    {isTmModelLoading ? "Loading..." : "Load Model"}
+                  </button>
+                </div>
               </div>
 
-              <p className="text-[9px] text-[#8a8a7c] mt-1 italic leading-relaxed">
-                *Tip: Position the points closely for tactile gestures. Local template overrides run first on capture ensuring 100% precision.
-              </p>
+              {isTmActive && tmModel ? (
+                <div className="mt-1 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="flex items-center gap-1.5 font-bold text-emerald-700 leading-none">
+                      <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse inline-block" />
+                      Teachable Model Active
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsTmActive(false);
+                        setTmModel(null);
+                        setTmModelUrl("");
+                        localStorage.removeItem("signbridge_tm_model_url");
+                        alert("Custom Teachable Machine model disconnected.");
+                      }}
+                      className="text-[9px] text-rose-600 font-bold hover:underline cursor-pointer"
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+
+                  {tmPredictions.length > 0 && (
+                    <div className="p-1.5 bg-[#8d917a]/15 rounded-lg border border-[#8d917a]/30">
+                      <span className="text-[8.5px] font-bold text-[#5a5a40] uppercase block mb-1">Live Class Confidences:</span>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px] text-[#33332d]">
+                        {tmPredictions.map((pred, i) => (
+                          <div key={i} className="flex justify-between">
+                            <span className="truncate max-w-[90px] font-bold">{pred.className}</span>
+                            <span className="font-mono font-bold text-emerald-800">{(pred.probability * 100).toFixed(0)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[9px] text-[#8a8a7c] bg-[#f5f5f0]/50 p-1.5 rounded-lg border border-dashed border-[#e2e2da] italic">
+                  Not connected. Paste your URL and click "Load Model" to run live webcam image classification.
+                </div>
+              )}
             </div>
           )}
 
-          {/* TAB 3: ASL Public APIs FAQ Info */}
+          {/* TAB 4: ASL Public APIs FAQ Info */}
           {activeTab === "faq" && (
             <div className="flex flex-col gap-2 text-left">
               <span className="text-[10px] text-[#5a5a40] font-sans font-bold uppercase tracking-wider block">
