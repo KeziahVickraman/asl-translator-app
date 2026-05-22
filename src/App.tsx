@@ -8,6 +8,7 @@ import CameraView from "./components/CameraView";
 import TranscriptionView from "./components/TranscriptionView";
 import LearnView from "./components/LearnView";
 import SettingsView from "./components/SettingsView";
+import LoginView from "./components/LoginView";
 import { supabase } from "./supabaseClient";
 
 // Helper to safely convert dynamic Supabase table rows from "entries" to standard TranslationHistoryItem type
@@ -57,6 +58,7 @@ function mapRowToHistoryItem(row: any): TranslationHistoryItem {
     recognizedText: recognizedText,
     mode: row.mode || "camera",
     timestamp: formattedTime,
+    language: row.language || row.dialect || "ASL",
   };
 }
 
@@ -85,6 +87,10 @@ const DEFAULT_MOCK_HISTORY: TranslationHistoryItem[] = [
 ];
 
 export default function App() {
+  // User Authentication variables
+  const [userEmail, setUserEmail] = useState<string>(() => localStorage.getItem("signbridge_user_email") || "");
+  const [userName, setUserName] = useState<string>(() => localStorage.getItem("signbridge_user_name") || "");
+
   // 1. Unified state shape mapping exactly to requested specs
   const [mode, setMode] = useState<DisplayMode>("home");
   const [inputText, setInputText] = useState<string>("");
@@ -178,11 +184,11 @@ export default function App() {
   // Post items to Postgres storage live with self-healing fallback loops
   const addHistoryItem = async (text: string, recognizedText: string, logMode: "camera" | "text") => {
     const attempts = [
-      { text, recognized_text: recognizedText, mode: logMode },
-      { text, recognizedText: recognizedText, mode: logMode },
-      { text, recognizedtext: recognizedText, mode: logMode },
-      { text, recognized: recognizedText, mode: logMode },
-      { text, mode: logMode }
+      { text, recognized_text: recognizedText, mode: logMode, user_email: userEmail, language: languageClass },
+      { text, recognizedText: recognizedText, mode: logMode, user_email: userEmail, language: languageClass },
+      { text, recognizedtext: recognizedText, mode: logMode, user_email: userEmail, language: languageClass },
+      { text, recognized: recognizedText, mode: logMode, user_email: userEmail, language: languageClass },
+      { text, mode: logMode, user_email: userEmail, language: languageClass }
     ];
 
     let insertedRecord = null;
@@ -218,13 +224,29 @@ export default function App() {
         timestamp: "Now",
         text,
         recognizedText,
-        mode: logMode
+        mode: logMode,
+        language: languageClass
       };
       setHistory((prev) => {
         const cleanedPrev = prev.filter(item => !["hist-1", "hist-2", "hist-3"].includes(item.id));
         return [localItem, ...cleanedPrev];
       });
     }
+  };
+
+  const handleLogin = (email: string, name: string) => {
+    localStorage.setItem("signbridge_user_email", email);
+    localStorage.setItem("signbridge_user_name", name);
+    setUserEmail(email);
+    setUserName(name || email.split("@")[0]);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("signbridge_user_email");
+    localStorage.removeItem("signbridge_user_name");
+    setUserEmail("");
+    setUserName("");
+    setMode("home");
   };
 
   const handleStartCamera = () => {
@@ -240,13 +262,17 @@ export default function App() {
     setIsSidebarOpen(!isSidebarOpen);
   };
 
+  if (!userEmail) {
+    return <LoginView onLogin={handleLogin} />;
+  }
+
   return (
     <div className={`min-h-screen flex flex-col bg-[#10141a] text-[#dfe2eb] overflow-x-hidden ${highContrast ? "contrast-125" : ""}`}>
       
       {/* Top Banner Branding Header */}
       <TopAppBar
         currentMode={mode}
-        userEmail="keziahvickraman@gmail.com"
+        userEmail={userEmail}
         onNavigate={setMode}
         onToggleSidebar={toggleSidebar}
       />
@@ -261,6 +287,10 @@ export default function App() {
                 onStartTranslation={handleStartTranslation}
                 onNavigate={setMode}
                 subscriptionTier={subscriptionTier}
+                userEmail={userEmail}
+                userName={userName}
+                onLogout={handleLogout}
+                recentHistory={history}
               />
             </motion.div>
           )}

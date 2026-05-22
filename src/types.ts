@@ -31,6 +31,7 @@ export interface TranslationHistoryItem {
   text: string;
   recognizedText: string;
   mode: "camera" | "text";
+  language?: "ASL" | "Auslan" | "BSL";
 }
 
 export interface GlobalState {
