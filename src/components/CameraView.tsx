@@ -33,9 +33,15 @@ export default function CameraView({
   recentHistory,
 }: CameraViewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingIntervalRef = useRef<any>(null);
   const predictionLoopRef = useRef<number | null>(null);
+
+  // Sync ref with element state
+  useEffect(() => {
+    videoRef.current = videoElement;
+  }, [videoElement]);
 
   const [hasCamera, setHasCamera] = useState<boolean | null>(null);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(true);
@@ -79,7 +85,7 @@ export default function CameraView({
     if (!url || !url.trim()) return;
     setIsTmModelLoading(true);
     try {
-      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js");
       await loadScript("https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js");
 
       let formattedUrl = url.trim();
@@ -248,17 +254,24 @@ export default function CameraView({
     return () => clearInterval(interval);
   }, []);
 
+  // Synchronize camera track stream to video element when video element mounts successfully
+  useEffect(() => {
+    if (hasCamera && videoElement && streamRef.current) {
+      videoElement.srcObject = streamRef.current;
+    }
+  }, [hasCamera, videoElement, isCameraActive]);
+
   // Continuous Teachable Machine prediction loop running at ~4 FPS (super snappy but highly efficient)
   useEffect(() => {
-    if (isTmActive && tmModel && isCameraActive && videoRef.current && hasCamera) {
+    if (isTmActive && tmModel && isCameraActive && videoElement && hasCamera) {
       let isStopped = false;
       
       const predictFrame = async () => {
-        if (isStopped || !videoRef.current || !tmModel) return;
+        if (isStopped || !videoElement || !tmModel) return;
         
         try {
-          if (videoRef.current.readyState >= 2) { // HAVE_CURRENT_DATA
-            const predictions = await tmModel.predict(videoRef.current);
+          if (videoElement.readyState >= 2) { // HAVE_CURRENT_DATA
+            const predictions = await tmModel.predict(videoElement);
             // Sort to get highest probability
             const sorted = [...predictions].sort((a: any, b: any) => b.probability - a.probability);
             setTmPredictions(sorted);
@@ -267,8 +280,9 @@ export default function CameraView({
               const best = sorted[0];
               // Update recognized text if it's different and stable
               setRecognisedText((prev) => {
-                const stripTag = (s: string) => s.split(" (Teachable")[0];
-                if (stripTag(prev) !== best.className) {
+                const stripTag = (s: string) => s.split(" (Teachable")[0].trim();
+                const matchedLabel = best.className.trim();
+                if (stripTag(prev) !== matchedLabel) {
                   // Vibrate to confirm
                   if ("vibrate" in navigator) {
                     navigator.vibrate(50);
@@ -311,7 +325,7 @@ export default function CameraView({
         }
       };
     }
-  }, [isTmActive, tmModel, isCameraActive, hasCamera]);
+  }, [isTmActive, tmModel, isCameraActive, hasCamera, videoElement]);
 
   // Trigger frame snapshot detection with Gemini
   const handleSnapAndRecognize = async () => {
@@ -409,7 +423,7 @@ export default function CameraView({
           {isCameraActive ? (
             hasCamera ? (
               <video
-                ref={videoRef}
+                ref={setVideoElement}
                 autoPlay
                 playsInline
                 muted
